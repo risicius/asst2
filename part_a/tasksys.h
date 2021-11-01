@@ -4,6 +4,9 @@
 #include "itasksys.h"
 #include <thread>
 #include <deque>
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
