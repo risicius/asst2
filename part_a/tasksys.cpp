@@ -116,18 +116,21 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     num_threads = num_threads_;
-    spin.test_and_set();
+    spin = true;
     tasks_done = 0;
     tasks_started = 0;
     num_total_tasks = -1;
+    run_no = 0;
     for (int i = 0; i < num_threads; ++i)
         pool.emplace_back(&TaskSystemParallelThreadPoolSpinning::spinner, this, i);
 }
 
 void TaskSystemParallelThreadPoolSpinning::spinner(int tid) {
+    std::unique_lock<std::mutex> lk(mtx);
     // std::cout << "thread " << tid << " started spinning" << std::endl;
+    lk.unlock();
     int local_cnt;
-    while (spin.test()) {
+    while (spin) {
         if (tasks_started < num_total_tasks) {
             local_cnt = tasks_started++;
             if (local_cnt < num_total_tasks) {
@@ -141,7 +144,8 @@ void TaskSystemParallelThreadPoolSpinning::spinner(int tid) {
 }
 
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
-    spin.clear();
+    // std::cout << "closing shop" << std::endl;
+    spin = false;
     for (auto& t : pool)
         t.join();
 }
@@ -152,12 +156,18 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
     // tasks sequentially on the calling thread.
     //
     std::unique_lock<std::mutex> lk(mtx);
+    tasks_done = 0;
+    tasks_started = 0;
+    // std::cout << "run number " << ++run_no << "with total number of tasks = " <<  num_total_tasks_ << std::endl;
     runner = runnable;
     num_total_tasks = num_total_tasks_;
     lk.unlock();
     while (1)
-        if (tasks_done  == num_total_tasks)
+        if (tasks_done  == num_total_tasks) {
+            // std::cout << "all jobs done" << std::endl;
+            num_total_tasks = -1;
             return;
+        }
 }
 
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
@@ -188,7 +198,7 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     // (requiring changes to tasksys.h).
     //
     num_threads = num_threads_;
-    keep_alive.test_and_set();
+    keep_alive = true;
     num_total_tasks = -1;
     tasks_started = 0;
     for (int i = 0; i < num_threads; ++i)
@@ -199,12 +209,12 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 void TaskSystemParallelThreadPoolSleeping::sleeper(int tid) {   
     int local_cnt;
     std::unique_lock<std::mutex> lk(mtx);
-    while (keep_alive.test()) {
+    while (keep_alive) {
         if (tasks_started < num_total_tasks) {
             local_cnt = tasks_started++;
             if (local_cnt < num_total_tasks) {
                 runner->runTask(local_cnt, num_total_tasks);
-                if (++tasks_done>= num_total_tasks)
+                if (++tasks_done >= num_total_tasks)
                     main_lk.notify_all();
             }        
         } else
@@ -218,7 +228,7 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // operations (such as thread pool shutdown construction) here.
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
-    keep_alive.clear();
+    keep_alive = false;
     worker_lk.notify_all();
     for (auto& t : pool)
         t.join();
