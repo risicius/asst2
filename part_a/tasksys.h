@@ -67,26 +67,10 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         std::atomic<int> tasks_started, tasks_done, num_total_tasks;
         int num_threads, run_no;
         // std::atomic_flag spin = ATOMIC_FLAG_INIT;
-        std::atomic<bool> spin;
+        bool spin;
         std::mutex mtx;
         void spinner(int tid);
         IRunnable* runner;
-};
-
-class Batch {
-    public:
-        Batch(TaskID tid_, IRunnable* runnable_, int num_total_tasks_, const std::vector<TaskID>& deps_);
-        Batch(Batch&& source);
-        int next_task();
-        TaskID task_id;
-        const std::vector<TaskID>& deps;
-        std::atomic_flag all_done = ATOMIC_FLAG_INIT;
-        std::atomic_flag all_deployed = ATOMIC_FLAG_INIT;
-        IRunnable* runnable;
-        int num_total_tasks;
-    private:
-        std::atomic<int> tasks_done, tasks_started;
-    
 };
 
 /*
@@ -109,7 +93,7 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         std::atomic<int> tasks_started, tasks_done, num_total_tasks;
         int num_threads;
         // std::atomic_flag keep_alive = ATOMIC_FLAG_INIT;
-        std::atomic<bool> keep_alive;
+        bool keep_alive;
         std::condition_variable worker_lk, main_lk;
         std::mutex mtx;
         void sleeper(int tid);

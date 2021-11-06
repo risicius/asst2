@@ -126,9 +126,9 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
 }
 
 void TaskSystemParallelThreadPoolSpinning::spinner(int tid) {
-    std::unique_lock<std::mutex> lk(mtx);
+    // std::unique_lock<std::mutex> lk(mtx);
     // std::cout << "thread " << tid << " started spinning" << std::endl;
-    lk.unlock();
+    // lk.unlock();
     int local_cnt;
     while (spin) {
         if (tasks_started < num_total_tasks) {
@@ -145,7 +145,9 @@ void TaskSystemParallelThreadPoolSpinning::spinner(int tid) {
 
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
     // std::cout << "closing shop" << std::endl;
+    std::unique_lock<std::mutex> lk(mtx);
     spin = false;
+    lk.unlock();
     for (auto& t : pool)
         t.join();
 }
@@ -203,22 +205,26 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     tasks_started = 0;
     for (int i = 0; i < num_threads; ++i)
         pool.emplace_back(&TaskSystemParallelThreadPoolSleeping::sleeper, this, i);
-    // std::cout << "all threads created" << std::endl;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sleeper(int tid) {   
     int local_cnt;
     std::unique_lock<std::mutex> lk(mtx);
+    lk.unlock();
     while (keep_alive) {
         if (tasks_started < num_total_tasks) {
             local_cnt = tasks_started++;
             if (local_cnt < num_total_tasks) {
                 runner->runTask(local_cnt, num_total_tasks);
-                if (++tasks_done >= num_total_tasks)
+                if (++tasks_done >= num_total_tasks) {
                     main_lk.notify_all();
+                }            
             }        
-        } else
+        } else {
+            lk.lock();
             worker_lk.wait(lk);
+            lk.unlock();
+        }            
     }
 }
 
@@ -228,7 +234,9 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // operations (such as thread pool shutdown construction) here.
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
+    mtx.lock();
     keep_alive = false;
+    mtx.unlock();
     worker_lk.notify_all();
     for (auto& t : pool)
         t.join();
