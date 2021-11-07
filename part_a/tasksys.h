@@ -90,7 +90,7 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         void sync();
     private:
         std::vector<std::thread> pool;
-        std::atomic<int> tasks_started, tasks_done, num_total_tasks;
+        std::atomic<int> tasks_started, num_idle, num_total_tasks, tasks_done;
         int num_threads;
         // std::atomic_flag keep_alive = ATOMIC_FLAG_INIT;
         bool keep_alive;

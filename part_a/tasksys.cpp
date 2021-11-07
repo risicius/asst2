@@ -202,6 +202,7 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     num_threads = num_threads_;
     keep_alive = true;
     num_total_tasks = -1;
+    num_idle = 0;
     tasks_started = 0;
     for (int i = 0; i < num_threads; ++i)
         pool.emplace_back(&TaskSystemParallelThreadPoolSleeping::sleeper, this, i);
@@ -209,23 +210,24 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 
 void TaskSystemParallelThreadPoolSleeping::sleeper(int tid) {   
     int local_cnt;
-    std::unique_lock<std::mutex> lk(mtx);
-    lk.unlock();
     while (keep_alive) {
         if (tasks_started < num_total_tasks) {
             local_cnt = tasks_started++;
             if (local_cnt < num_total_tasks) {
                 runner->runTask(local_cnt, num_total_tasks);
-                if (++tasks_done >= num_total_tasks) {
-                    main_lk.notify_all();
-                }            
+                ++tasks_done;
             }        
         } else {
-            lk.lock();
+            std::unique_lock<std::mutex> lk(mtx);
+            ++num_idle;
+            if (num_idle == num_threads and tasks_done >= num_total_tasks)
+                main_lk.notify_all();
             worker_lk.wait(lk);
+            --num_idle;
             lk.unlock();
         }            
     }
+    // std::cout << "thread " << tid << " died of natural causes" << std::endl;
 }
 
 
@@ -234,9 +236,9 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // operations (such as thread pool shutdown construction) here.
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
-    mtx.lock();
+    std::unique_lock<std::mutex> lk(mtx);
     keep_alive = false;
-    mtx.unlock();
+    lk.unlock();
     worker_lk.notify_all();
     for (auto& t : pool)
         t.join();
