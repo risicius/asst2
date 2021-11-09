@@ -58,21 +58,21 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         TaskSystemParallelThreadPoolSpinning(int num_threads);
         ~TaskSystemParallelThreadPoolSpinning();
         const char* name();
+        void workerspin();
         void run(IRunnable* runnable, int num_total_tasks);
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
     private:
-        std::vector<std::thread> pool;
-        std::atomic<int> tasks_started, tasks_done, num_total_tasks;
-        int num_threads, run_no;
-        // std::atomic_flag spin = ATOMIC_FLAG_INIT;
-        bool spin;
-        std::mutex mtx;
-        void spinner(int tid);
-        IRunnable* runner;
+        int thread_num;
+        IRunnable* runner_private;
+        std::vector<std::thread> threads;
+        int task_counter;
+        int total_tasks;
+        int done_tasks;
+        std::mutex counter;
+        bool existing;
 };
-
 /*
  * TaskSystemParallelThreadPoolSleeping: This class is the student's
  * optimized implementation of a parallel task execution engine that uses
