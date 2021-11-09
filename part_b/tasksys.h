@@ -7,6 +7,7 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
+#include <exception>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -68,16 +69,21 @@ class Batch {
     public:
         Batch(TaskID tid_, IRunnable* runnable_, int num_total_tasks_, const std::vector<TaskID>& deps_);
         Batch(Batch&& source);
-        int next_task();
+        void next_task();
         TaskID task_id;
         const std::vector<TaskID>& deps;
-        std::atomic_flag all_done = ATOMIC_FLAG_INIT;
-        std::atomic_flag all_deployed = ATOMIC_FLAG_INIT;
+        std::atomic<bool> all_done, all_deployed;
+        // std::atomic_flag all_deployed = ATOMIC_FLAG_INIT;
         IRunnable* runnable;
+        std::mutex mtx;
         int num_total_tasks;
-    private:
         std::atomic<int> tasks_done, tasks_started;
+    private:
     
+};
+
+class AllDone : public std::exception {
+
 };
 
 /*
@@ -94,20 +100,17 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         void run(IRunnable* runnable, int num_total_tasks);
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
-        void next_batch(std::unique_lock<std::mutex>& lk);
+        void next_batch(std::unique_lock<std::mutex>& lk, int tid);
         void sync();
     private:
         int task_id = 0;
         std::vector<std::thread> pool;
-        std::atomic<int> batch_idx; // tasks_started, tasks_done, num_total_tasks;
+        std::atomic<int> batch_idx, num_idle; // tasks_started, tasks_done, num_total_tasks;
         int num_threads;
-        std::atomic_flag keep_alive = ATOMIC_FLAG_INIT;
-        std::atomic_flag all_done = ATOMIC_FLAG_INIT;
-        std::atomic_flag waiting_for_batch = ATOMIC_FLAG_INIT;
-        std::condition_variable worker_lk, batch_lk;
-        std::mutex mtx;
+        std::atomic<bool> waiting_for_batch, keep_alive;
+        std::condition_variable batch_lk, worker_lk, sync_lk;
+        std::mutex mtx; 
         void sleeper(int tid);
-        // IRunnable* runner;
         std::deque<TaskID> batch_q;
         std::vector<Batch> batches;
 };

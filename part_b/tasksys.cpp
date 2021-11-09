@@ -139,118 +139,130 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    // std::cout << "constructor called" << std::endl;
+    task_id = 0;
     num_threads = num_threads_;
     batch_idx = -1;
-    keep_alive.test_and_set();
-    all_done.clear();
-    waiting_for_batch.clear();
+    keep_alive = true;
+    waiting_for_batch = false;
+    num_idle = 0;
     for (int i = 0; i < num_threads; ++i)
         pool.emplace_back(&TaskSystemParallelThreadPoolSleeping::sleeper, this, i);
     // std::cout << "all threads created" << std::endl;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sleeper(int tid) {   
-    std::unique_lock<std::mutex> lk(mtx);
-    // std::cout << "hola from " << tid << std::endl;
-    if (not waiting_for_batch.test()) {
-        next_batch(lk);
-    } else
-        worker_lk.wait(lk); // maybe fix sporadic
-    lk.unlock();
-    while (keep_alive.test()) {
-        switch (batches[batch_idx].next_task()) {
-            case 0:
-                all_done.test_and_set();
-                worker_lk.notify_all();
-            case 1:
-                lk.lock();
-                if (not waiting_for_batch.test()) {
-                    //std::cout << tid << " gonna go look for a new batch" << std::endl;
-                    next_batch(lk);
-                    lk.unlock();
-                    break;
-                }
-                lk.unlock();
-            case 2: // go chill
-                lk.lock();
-                // std::cout << tid << " chillin" << std::endl;
+    while (keep_alive) {
+        try{
+            if (batch_idx >= 0) {
+                batches[batch_idx].next_task();
+            } else {
+                throw std::out_of_range("no batch in queue");
+            }
+        } catch ( ... ) {
+            std::unique_lock<std::mutex> lk(mtx);
+            batch_lk.notify_all();
+            ++num_idle;
+            // std::cout << "num_idle = " << num_idle << std::endl;
+            if (num_idle == num_threads and batch_q.empty())
+                sync_lk.notify_all();
+            if (not waiting_for_batch) {
+                next_batch(lk, tid);
+            } else {
+                // std::cout << tid << " chilling" << std::endl;
                 worker_lk.wait(lk);
-                lk.unlock();
-                break;
-            default:
-                continue;
-        }
+            }
+            --num_idle;
+            lk.unlock();
+        }   
     }
-    // std::cout << tid << " i'm dead" << std::endl;
 }
 
-void TaskSystemParallelThreadPoolSleeping::next_batch(std::unique_lock<std::mutex>& lk) {
-check_again:
-    if (batch_q.empty()) {
-        //std::cout << "waiting for more batches" << std::endl;
-        waiting_for_batch.test_and_set();
-        batch_lk.wait(lk);
-        if (not keep_alive.test())
-            return;
-        waiting_for_batch.clear();
-        goto check_again;
+void TaskSystemParallelThreadPoolSleeping::next_batch(std::unique_lock<std::mutex>& lk, int tid) {
+    waiting_for_batch = true;
+    while (1) {
+        if (batch_q.empty()) {
+            // std::cout << "num_idle = " << num_idle << std::endl;
+            // std::cout << "no batches in the queue, waiting for more" << std::endl;
+            // worker_lk.notify_all();
+            batch_lk.wait(lk);
+            if (not keep_alive)
+                return;
+            continue;
+        }
+        if (batch_idx >= 0 and not batches[batch_idx].all_deployed) { 
+            // std::cout << batch_idx << std::endl;
+            // std::cout << "all_d: " << batches[batch_idx].all_deployed << " t_s: " << batches[batch_idx].tasks_started << std::endl;
+            // std::cout << "DOUBLE FUCK from tid " << tid << std::endl;
+            worker_lk.notify_all();
+            batch_lk.wait(lk);
+        } else {
+            break;
+        }
     }
     int tmp_idx, i = 0;
-try_again: // infinite loop?
-    if (i++ < batch_q.size()) { // prevents endlessly cycling queue
-        //std::cout << "checking the queue" << std::endl;
-        tmp_idx = batch_q.front();
-        batch_q.pop_front();
-        for (TaskID tid_ : batches[tmp_idx].deps)
-            if (not batches[tid_].all_deployed.test()) {
-                //std::cout << "moving it back" << std::endl;
-                batch_q.emplace_back(tmp_idx);
-                goto try_again;
+    while (1) {
+        if (batch_idx >= 0 and not batches[batch_idx].all_deployed) { 
+            // std::cout << batch_idx << std::endl;
+            // std::cout << "all_d: " << batches[batch_idx].all_deployed << " t_s: " << batches[batch_idx].tasks_started << std::endl;
+            // std::cout << "DOUBLE FUCK from tid " << tid << std::endl;
+            worker_lk.notify_all();
+            batch_lk.wait(lk);
+        } else if (i < batch_q.size()) { // prevents endlessly cycling queue
+            i++;
+            // std::cout << "checking the queue" << std::endl;
+            tmp_idx = batch_q.front();
+            batch_q.pop_front();
+            bool pong = false;
+            for (TaskID tid_ : batches[tmp_idx].deps) {
+                if (not batches[tid_].all_deployed) {
+                    // std::cout << "moving it back" << std::endl;
+                    batch_q.emplace_back(tmp_idx);
+                    pong = true;
+                    break;
+                }
             }
-    } else {
-        //std::cout << "waiting for batch" << std::endl;
-        worker_lk.wait(lk); // forfeit lock
-        i = 0;
-        goto try_again;
+            if (pong)
+                continue;
+            else
+                break;
+        } else {
+            // std::cout << "waiting for batch at idx " << batch_idx << std::endl;
+            // std::cout << "all_d: " << batches[batch_idx].all_deployed << " t_s: " << batches[batch_idx].tasks_started << std::endl;
+            worker_lk.notify_all();
+            batch_lk.wait(lk); // forfeit lock
+            i = 0;
+        }
     }
     batch_idx = tmp_idx;
-    //std::cout << "found new batch, back to work" << std::endl;
+    // std::cout << tid << "found new batch, back to work" << std::endl;
+    waiting_for_batch = false;
     worker_lk.notify_all(); // forfeit lock
 }
 
 Batch::Batch(TaskID tid_, IRunnable* runnable_, int num_total_tasks_, const std::vector<TaskID>& deps_): 
-    task_id(tid_), runnable(runnable_), num_total_tasks(num_total_tasks_), deps(deps_) { 
-        tasks_done = 0;
-        tasks_started = 0;
-        all_done.clear();
-        all_deployed.clear();
-    }
-Batch::Batch(Batch&& source): 
-    task_id(source.task_id), runnable(source.runnable), num_total_tasks(source.num_total_tasks), deps(source.deps),
-    tasks_done(0), tasks_started(0) {
-        all_done.clear();
-        all_deployed.clear();
+    task_id(tid_), deps(deps_), runnable(runnable_), num_total_tasks(num_total_tasks_), tasks_done(0), tasks_started(0), all_deployed(false) { 
     }
 
-int Batch::next_task() {
+Batch::Batch(Batch&& source): 
+    task_id(source.task_id), deps(source.deps), runnable(source.runnable), num_total_tasks(source.num_total_tasks), 
+    tasks_done(source.tasks_done.load()), tasks_started(source.tasks_started.load()), all_deployed(source.all_deployed.load()) {
+    //    if (source.tasks_started != 0)
+     //       std::cout << "WIERD SHIT" << std::endl;
+    }
+
+void Batch::next_task() {
     int local_cnt = tasks_started++;
     if (local_cnt < num_total_tasks) {
         runnable->runTask(local_cnt, num_total_tasks);
         // std::cout << "finished task " << local_cnt << std::endl;
-        if (++tasks_done == num_total_tasks) {
-            all_done.test_and_set();
-            // std::cout << "all tasks done" << std::endl;
-            return 0;
-        }
-        return -1;
-    } else if (local_cnt == num_total_tasks) {
-        all_deployed.test_and_set();
-        // std::cout << "all tasks deployed" << std::endl;
-        return 1; // fetch the next batch, only returned once from each batch
+        // if (local_cnt == num_total_tasks - 1)
+            // std::cout << "all done" << std::endl;
     } else {
-        // std::cout << "go chill" << std::endl;
-        return 2; // no more work for here to be done
-    }
+        // std::cout << "overflow" << std::endl;
+        all_deployed = true;
+        throw AllDone();
+    }        
 }
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     //
@@ -259,7 +271,8 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
-    keep_alive.clear();
+    // std::cout << "destructor called" << std::endl;
+    keep_alive = false;
     worker_lk.notify_all();
     batch_lk.notify_all();
     for (auto& t : pool)
@@ -286,7 +299,6 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     // TODO: CS149 students will implement this method in Part B.
     //
     std::unique_lock<std::mutex> lk(mtx);
-    all_done.clear();
     int tid = task_id++;
     // std::cout << "recieved batch " << tid << std::endl;
     batches.emplace_back(tid, runnable_, num_total_tasks_, deps_);
@@ -302,7 +314,17 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
     // TODO: CS149 students will modify the implementation of this method in Part B.
     //
     // std::cout << "started synicing" << std::endl;
-    while (not (all_done.test() and waiting_for_batch.test()));
+    std::unique_lock<std::mutex> lk(mtx);
+    sync_lk.wait(lk);
+    for (auto& b : batches) {
+        if (not b.all_deployed) {
+            std::cout << "batch nbr: "<< b.task_id << " failed" << std::endl;
+            std::cout << "all_d: " << batches[b.task_id].all_deployed << " t_s: " << batches[b.task_id].tasks_started << std::endl;
+        }
+    }
+    // std::cout << "last batch idx " << batch_idx << std::endl;
+    // std::cout << "all_d: " << batches[batch_idx].all_deployed << " t_s: " << batches[batch_idx].tasks_started << std::endl;
     // std::cout << "i'm in sync!" << std::endl;
+
     return;
 }
